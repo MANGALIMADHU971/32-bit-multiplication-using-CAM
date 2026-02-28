@@ -1,0 +1,120 @@
+`timescale 1ns/1ps
+
+module tb_a_cam_32x32;
+
+    reg clk;
+    reg rst;
+    reg start;
+    reg [31:0] a;
+    reg [31:0] b;
+
+    wire [63:0] result;
+    wire done;
+    wire busy;
+
+    integer i;
+    reg [63:0] expected;
+
+    // Instantiate DUT
+    a_cam_16x16 uut (
+        .clk(clk),
+        .rst(rst),
+        .start(start),
+        .a(a),
+        .b(b),
+        .result(result),
+        .done(done),
+        .busy(busy)
+    );
+
+    // 100 MHz clock
+    always #5 clk = ~clk;
+
+    // ===============================
+    // TASK: Run one multiply test
+    // ===============================
+    task run_test;
+        input [31:0] op1;
+        input [31:0] op2;
+        begin
+            @(posedge clk);
+            a = op1;
+            b = op2;
+            start = 1;
+
+            @(posedge clk);
+            start = 0;
+
+            // Wait until done
+            wait(done);
+
+            expected = op1 * op2;
+
+            if (result !== expected) begin
+                $display("❌ ERROR: %0d * %0d = %0d (Expected %0d)",
+                         op1, op2, result, expected);
+                $fatal;
+            end
+            else begin
+                $display("✅ PASS: %0d * %0d = %0d",
+                         op1, op2, result);
+            end
+
+            // Small gap between tests
+            repeat (3) @(posedge clk);
+        end
+    endtask
+
+    // ===============================
+    // TEST SEQUENCE
+    // ===============================
+    initial begin
+        clk = 0;
+        rst = 1;
+        start = 0;
+        a = 0;
+        b = 0;
+
+        #20;
+        rst = 0;
+
+        // Wait for CAM internal initialization
+        // (important - your CAM builds table on reset)
+        #4000;
+
+        // ---------------------------
+        $display("----- ZERO TESTS -----");
+        run_test(0, 0);
+        run_test(0, 123456);
+        run_test(987654, 0);
+
+        // ---------------------------
+        $display("----- BASIC TESTS -----");
+        run_test(25, 13);
+        run_test(1234, 5678);
+        run_test(1, 99999);
+        run_test(2, 5000);
+        run_test(16, 16);
+
+        // ---------------------------
+        $display("----- MAX VALUE TEST -----");
+        run_test(32'hFFFFFFFF, 32'hFFFFFFFF);
+
+        // ---------------------------
+        $display("----- PATTERN TESTS -----");
+        run_test(32'hAAAAAAAA, 32'h55555555);
+        run_test(32'h0F0F0F0F, 32'hF0F0F0F0);
+
+        // ---------------------------
+        $display("----- RANDOM TESTS -----");
+        for (i = 0; i < 20; i = i + 1) begin
+            run_test($random, $random);
+        end
+
+        $display("🎉 ALL TESTS PASSED SUCCESSFULLY 🎉");
+
+        #100;
+        $finish;
+    end
+
+endmodule
