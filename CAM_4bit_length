@@ -1,0 +1,101 @@
+module a_cam_4x4 (
+    input  wire        clk,
+    input  wire        rst,
+    input  wire [3:0]  a,
+    input  wire [3:0]  b,
+    output reg  [7:0]  product,
+    output reg         hit,
+    output reg  [7:0]  match_addr,
+    output reg         init_done
+);
+
+    parameter DEPTH = 256;
+
+    // Format:
+    // [15:12] = A
+    // [11:8]  = B
+    // [7:0]   = Product
+
+    reg [15:0] cam_mem [0:DEPTH-1];
+
+    reg [7:0] init_counter;
+    reg [3:0] init_A;
+    reg [3:0] init_B;
+    reg [7:0] init_P;
+
+    reg [3:0] a_reg, b_reg;
+    reg [DEPTH-1:0] match;
+
+    integer i;
+
+    // -------------------------------------------------
+    // Initialization (Corrected version - stable)
+    // -------------------------------------------------
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            init_counter <= 0;
+            init_done    <= 0;
+        end
+        else if (!init_done) begin
+
+            init_A <= init_counter[7:4];
+            init_B <= init_counter[3:0];
+            init_P <= init_counter[7:4] * init_counter[3:0];
+
+            cam_mem[init_counter] <= {
+                init_A,
+                init_B,
+                init_P
+            };
+
+            if (init_counter == 8'd255)
+                init_done <= 1;
+            else
+                init_counter <= init_counter + 1;
+        end
+    end
+
+    // -------------------------------------------------
+    // Stage 1: Register inputs
+    // -------------------------------------------------
+    always @(posedge clk) begin
+        if (init_done) begin
+            a_reg <= a;
+            b_reg <= b;
+        end
+    end
+
+    // -------------------------------------------------
+    // Stage 2: FULL PARALLEL COMPARE (256)
+    // -------------------------------------------------
+    always @(*) begin
+        for (i = 0; i < DEPTH; i = i + 1) begin
+            match[i] =
+                (cam_mem[i][15:12] == a_reg) &&
+                (cam_mem[i][11:8]  == b_reg);
+        end
+    end
+
+    // -------------------------------------------------
+    // Stage 3: Priority Selection + Output Register
+    // -------------------------------------------------
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            product    <= 0;
+            hit        <= 0;
+            match_addr <= 0;
+        end
+        else if (init_done) begin
+            hit <= 0;
+
+            for (i = 0; i < DEPTH; i = i + 1) begin
+                if (match[i]) begin
+                    product    <= cam_mem[i][7:0];
+                    match_addr <= i;
+                    hit        <= 1;
+                end
+            end
+        end
+    end
+
+endmodule
