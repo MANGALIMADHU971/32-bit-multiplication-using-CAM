@@ -1,120 +1,127 @@
-`timescale 1ns/1ps
+module a_cam_32x32 (
+    input  wire        clk,
+    input  wire        rst,
+    input  wire        start,
+    input  wire [31:0] a,
+    input  wire [31:0] b,
+    output reg  [63:0] result,
+    output reg         done,
+    output reg         busy
+);
 
-module tb_a_cam_32x32;
+    reg [31:0] opA, opB;
+    reg [63:0] accumulator;
 
-    reg clk;
-    reg rst;
-    reg start;
-    reg [31:0] a;
-    reg [31:0] b;
+    reg [2:0] i, j;
+    reg [6:0] cycle_count;     // 0 to 66 (64 ops + 2 flush)
 
-    wire [63:0] result;
-    wire done;
-    wire busy;
+    reg [2:0] i_d1, j_d1;
+    reg [2:0] i_d2, j_d2;
 
-    integer i;
-    reg [63:0] expected;
+    reg [1:0] valid_pipe;
 
-    // Instantiate DUT
-    a_cam_16x16 uut (
+    wire [3:0] a_chunk;
+    wire [3:0] b_chunk;
+    wire [7:0] cam_product;
+    wire       cam_ready;
+
+    assign a_chunk = (opA >> (i*4)) & 4'hF;
+    assign b_chunk = (opB >> (j*4)) & 4'hF;
+
+    a_cam_4x4 u_cam (
         .clk(clk),
         .rst(rst),
-        .start(start),
-        .a(a),
-        .b(b),
-        .result(result),
-        .done(done),
-        .busy(busy)
+        .a(a_chunk),
+        .b(b_chunk),
+        .product(cam_product),
+        .hit(),
+        .match_addr(),
+        .init_done(cam_ready)
     );
 
-    // 100 MHz clock
-    always #5 clk = ~clk;
+    localparam IDLE = 1'b0,
+               RUN  = 1'b1;
 
-    // ===============================
-    // TASK: Run one multiply test
-    // ===============================
-    task run_test;
-        input [31:0] op1;
-        input [31:0] op2;
-        begin
-            @(posedge clk);
-            a = op1;
-            b = op2;
-            start = 1;
+    reg state;
 
-            @(posedge clk);
-            start = 0;
-
-            // Wait until done
-            wait(done);
-
-            expected = op1 * op2;
-
-            if (result !== expected) begin
-                $display("❌ ERROR: %0d * %0d = %0d (Expected %0d)",
-                         op1, op2, result, expected);
-                $fatal;
-            end
-            else begin
-                $display("✅ PASS: %0d * %0d = %0d",
-                         op1, op2, result);
-            end
-
-            // Small gap between tests
-            repeat (3) @(posedge clk);
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            state <= IDLE;
+            busy <= 0;
+            done <= 0;
+            accumulator <= 0;
+            result <= 0;
+            i <= 0;
+            j <= 0;
+            cycle_count <= 0;
+            valid_pipe <= 0;
         end
-    endtask
+        else begin
+            done <= 0;
 
-    // ===============================
-    // TEST SEQUENCE
-    // ===============================
-    initial begin
-        clk = 0;
-        rst = 1;
-        start = 0;
-        a = 0;
-        b = 0;
+            case (state)
 
-        #20;
-        rst = 0;
+            //---------------------------------
+            IDLE:
+            //---------------------------------
+            begin
+                busy <= 0;
+                if (start && cam_ready) begin
+                    busy <= 1;
+                    accumulator <= 0;
+                    opA <= a;
+                    opB <= b;
+                    i <= 0;
+                    j <= 0;
+                    cycle_count <= 0;
+                    valid_pipe <= 0;
+                    state <= RUN;
+                end
+            end
 
-        // Wait for CAM internal initialization
-        // (important - your CAM builds table on reset)
-        #4000;
+            //---------------------------------
+            RUN:
+            //---------------------------------
+            begin
+                // pipeline indices
+                i_d1 <= i;
+                j_d1 <= j;
+                i_d2 <= i_d1;
+                j_d2 <= j_d1;
 
-        // ---------------------------
-        $display("----- ZERO TESTS -----");
-        run_test(0, 0);
-        run_test(0, 123456);
-        run_test(987654, 0);
+                // valid only during first 64 cycles
+                valid_pipe <= {valid_pipe[0], (cycle_count < 64)};
 
-        // ---------------------------
-        $display("----- BASIC TESTS -----");
-        run_test(25, 13);
-        run_test(1234, 5678);
-        run_test(1, 99999);
-        run_test(2, 5000);
-        run_test(16, 16);
+                // accumulate when valid emerges
+                if (valid_pipe[1]) begin
+                    accumulator <= accumulator +
+                        ({56'd0, cam_product} << (4*(i_d2 + j_d2)));
+                end
 
-        // ---------------------------
-        $display("----- MAX VALUE TEST -----");
-        run_test(32'hFFFFFFFF, 32'hFFFFFFFF);
+                // generate 64 combinations
+                if (cycle_count < 64) begin
+                    if (j == 3'd7) begin
+                        j <= 0;
+                        i <= i + 1;
+                    end
+                    else begin
+                        j <= j + 1;
+                    end
+                end
 
-        // ---------------------------
-        $display("----- PATTERN TESTS -----");
-        run_test(32'hAAAAAAAA, 32'h55555555);
-        run_test(32'h0F0F0F0F, 32'hF0F0F0F0);
+                cycle_count <= cycle_count + 1;
 
-        // ---------------------------
-        $display("----- RANDOM TESTS -----");
-        for (i = 0; i < 20; i = i + 1) begin
-            run_test($random, $random);
+                // finish after flush
+                if (cycle_count == 66) begin
+                    result <= accumulator;
+                    busy <= 0;
+                    done <= 1;
+                    state <= IDLE;
+                end
+            end
+
+            endcase
         end
-
-        $display("🎉 ALL TESTS PASSED SUCCESSFULLY 🎉");
-
-        #100;
-        $finish;
     end
 
 endmodule
